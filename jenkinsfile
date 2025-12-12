@@ -2,9 +2,9 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION    = 'us-east-1'
-    TF_DIR        = 'terraform'
-    TF_WORKSPACE  = 'prod'
+    AWS_REGION   = 'us-east-1'
+    TF_DIR       = 'terraform'
+    TF_WORKSPACE = 'prod'
   }
 
   stages {
@@ -17,19 +17,22 @@ pipeline {
 
     stage('Prepare') {
       steps {
-        // Update version file with commit hash
         sh '''
-          echo "Deployed from ${GIT_COMMIT}" > terraform/userdata/version.txt
+          # Create userdata directory if missing
+          mkdir -p ${TF_DIR}/userdata
+
+          # Save deployed version info
+          echo "Deployed from commit ${GIT_COMMIT}" > ${TF_DIR}/userdata/version.txt
         '''
       }
     }
 
-    stage('Terraform Init/Plan') {
+    stage('Terraform Init & Plan') {
       steps {
         dir("${TF_DIR}") {
           sh '''
             terraform init -input=false -reconfigure
-            terraform workspace select prod || terraform workspace new prod
+            terraform workspace select ${TF_WORKSPACE} || terraform workspace new ${TF_WORKSPACE}
             terraform plan -out=tfplan -input=false
           '''
         }
@@ -39,39 +42,37 @@ pipeline {
     stage('Terraform Apply') {
       steps {
         dir("${TF_DIR}") {
-          sh '''
-            terraform apply -input=false -auto-approve tfplan
-          '''
+          sh "terraform apply -input=false -auto-approve tfplan"
         }
       }
     }
 
     stage('Trigger Instance Refresh') {
       steps {
-        // Use single quotes to avoid Groovy parsing of $()
-        sh '''
-          ASG_NAME=$(terraform -chdir=terraform output -raw asg_name)
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --preferences '{"MinHealthyPercentage":80}' || true
-        '''
-      }
-    }
-
-    stage('Validate') {
-      steps {
-        script {
-          def alb = sh(
-            script: "cd ${TF_DIR} && terraform output -raw alb_dns_name",
-            returnStdout: true
-          ).trim()
-
-          sh """
-            curl -f http://${alb} || true
-          """
+        dir("${TF_DIR}") {
+          sh '''
+            ASG_NAME=$(terraform output -raw asg_name)
+            
+            if [ -n "$ASG_NAME" ]; then
+              echo "Starting instance refresh for $ASG_NAME"
+              aws autoscaling start-instance-refresh \
+                --auto-scaling-group-name "$ASG_NAME" \
+                --preferences '{"MinHealthyPercentage":80}'
+            else
+              echo "ASG name not found via terraform output"
+            fi
+          '''
         }
       }
     }
 
+    stage('Validate Deployment') {
+      steps {
+        script {
+          def alb = sh(script: "cd ${TF_DIR} && terraform output -raw alb_dns_name", returnStdout: true).trim()
+          sh "curl -f http://${alb} || true"
+        }
+      }
+    }
   }
 }
