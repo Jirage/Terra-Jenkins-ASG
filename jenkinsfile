@@ -48,8 +48,8 @@ pipeline {
       steps {
         sh """
           aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name $(terraform -chdir=${TF_DIR} output -raw asg_name) \
-            --preferences '{"MinHealthyPercentage":80}' || true
+            --auto-scaling-group-name \$(terraform -chdir=${TF_DIR} output -raw asg_name) \
+            --preferences '{\"MinHealthyPercentage\":80}' || true
         """
       }
     }
@@ -57,7 +57,8 @@ pipeline {
     stage('Validate Deployment') {
       steps {
         script {
-          def alb = sh(script: "cd ${TF_DIR} && terraform output -raw alb_dns_name", returnStdout: true).trim()
+          def alb = sh(script: "cd ${TF_DIR} && terraform output -raw alb_dns_name", 
+                       returnStdout: true).trim()
           sh "curl -f http://${alb} || true"
         }
       }
