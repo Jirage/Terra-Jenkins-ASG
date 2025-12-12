@@ -5,6 +5,7 @@ pipeline {
     AWS_REGION   = 'us-east-1'
     TF_DIR       = 'terraform'
     TF_WORKSPACE = 'prod'
+    PATH         = "/usr/local/bin:/usr/bin:/bin"
   }
 
   stages {
@@ -17,24 +18,20 @@ pipeline {
 
     stage('Prepare') {
       steps {
-        sh '''
-          # Create userdata directory if missing
-          mkdir -p ${TF_DIR}/userdata
-
-          # Save deployed version info
-          echo "Deployed from commit ${GIT_COMMIT}" > ${TF_DIR}/userdata/version.txt
-        '''
+        sh "mkdir -p terraform/userdata"
+        sh "echo 'Deployed from commit ${GIT_COMMIT}' > terraform/userdata/version.txt"
       }
     }
 
     stage('Terraform Init & Plan') {
       steps {
         dir("${TF_DIR}") {
-          sh '''
-            terraform init -input=false -reconfigure
-            terraform workspace select ${TF_WORKSPACE} || terraform workspace new ${TF_WORKSPACE}
-            terraform plan -out=tfplan -input=false
-          '''
+          sh "terraform version"
+          sh "ls -l /usr/local/bin/"
+          sh "which terraform"
+          sh "terraform init -input=false -reconfigure"
+          sh "terraform workspace select ${TF_WORKSPACE} || terraform workspace new ${TF_WORKSPACE}"
+          sh "terraform plan -out=tfplan -input=false"
         }
       }
     }
@@ -49,20 +46,11 @@ pipeline {
 
     stage('Trigger Instance Refresh') {
       steps {
-        dir("${TF_DIR}") {
-          sh '''
-            ASG_NAME=$(terraform output -raw asg_name)
-            
-            if [ -n "$ASG_NAME" ]; then
-              echo "Starting instance refresh for $ASG_NAME"
-              aws autoscaling start-instance-refresh \
-                --auto-scaling-group-name "$ASG_NAME" \
-                --preferences '{"MinHealthyPercentage":80}'
-            else
-              echo "ASG name not found via terraform output"
-            fi
-          '''
-        }
+        sh """
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name $(terraform -chdir=${TF_DIR} output -raw asg_name) \
+            --preferences '{"MinHealthyPercentage":80}' || true
+        """
       }
     }
 
