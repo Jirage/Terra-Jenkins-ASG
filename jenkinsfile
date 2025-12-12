@@ -1,55 +1,77 @@
 pipeline {
   agent any
+
   environment {
-    AWS_REGION = 'us-east-1'
-    TF_DIR = 'terraform'
-    TF_WORKSPACE = 'prod'
+    AWS_REGION    = 'us-east-1'
+    TF_DIR        = 'terraform'
+    TF_WORKSPACE  = 'prod'
   }
-  triggers {
-    // if using GitHub webhook, also configure webhook in repo settings
-  }
+
   stages {
+
     stage('Checkout') {
-      steps { checkout scm }
-    }
-    stage('Prepare') {
       steps {
-        // Optionally update userdata file with version or commit hash
-        sh "echo 'Deployed from ${GIT_COMMIT}' > terraform/userdata/version.txt"
+        checkout scm
       }
     }
+
+    stage('Prepare') {
+      steps {
+        // Update version file with commit hash
+        sh '''
+          echo "Deployed from ${GIT_COMMIT}" > terraform/userdata/version.txt
+        '''
+      }
+    }
+
     stage('Terraform Init/Plan') {
       steps {
         dir("${TF_DIR}") {
-          sh "terraform init -input=false -reconfigure"
-          sh "terraform workspace select ${TF_WORKSPACE} || terraform workspace new ${TF_WORKSPACE}"
-          sh "terraform plan -out=tfplan -input=false"
+          sh '''
+            terraform init -input=false -reconfigure
+            terraform workspace select prod || terraform workspace new prod
+            terraform plan -out=tfplan -input=false
+          '''
         }
       }
     }
+
     stage('Terraform Apply') {
       steps {
         dir("${TF_DIR}") {
-          sh "terraform apply -input=false -auto-approve tfplan"
+          sh '''
+            terraform apply -input=false -auto-approve tfplan
+          '''
         }
       }
     }
+
     stage('Trigger Instance Refresh') {
       steps {
-        // Start instance refresh via AWS CLI so ASG rolls instances with new user data
-        sh """
-          aws autoscaling start-instance-refresh --auto-scaling-group-name $(terraform output -raw asg_name) --preferences '{"MinHealthyPercentage":80}' || true
-        """
+        // Use single quotes to avoid Groovy parsing of $()
+        sh '''
+          ASG_NAME=$(terraform -chdir=terraform output -raw asg_name)
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{"MinHealthyPercentage":80}' || true
+        '''
       }
     }
+
     stage('Validate') {
       steps {
-        // curl ALB DNS or perform HTTP check
         script {
-          def alb = sh(script: "cd ${TF_DIR} && terraform output -raw alb_dns_name", returnStdout: true).trim()
-          sh "curl -f http://${alb} || true"
+          def alb = sh(
+            script: "cd ${TF_DIR} && terraform output -raw alb_dns_name",
+            returnStdout: true
+          ).trim()
+
+          sh """
+            curl -f http://${alb} || true
+          """
         }
       }
     }
+
   }
 }
